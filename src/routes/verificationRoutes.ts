@@ -11,6 +11,20 @@ import { verificationService } from '../services/CheckinVerificationService';
 
 const router = Router();
 
+// Add this interface for verification status responses
+interface VerificationStatusResponse {
+  customerId: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'expired' | 'abandoned' | 'unknown';
+  sessionId?: string;
+  result?: any;
+  lastUpdated: string;
+  canRedirect: boolean;
+  redirectTo?: string;
+}
+
+// In-memory store for verification statuses (in production, use Redis or database)
+const verificationStatusStore = new Map<string, VerificationStatusResponse>();
+
 // Validation Schemas
 const userDataSchema = Joi.object({
   firstName: Joi.string().min(1).max(100).optional().default('Test'),
@@ -106,6 +120,26 @@ const verifyWebhookSignature = (req: Request, res: Response, next: NextFunction)
   }
 };
 
+// Helper function to map webhook status to polling status
+function mapWebhookStatusToPollingStatus(webhookStatus: string): VerificationStatusResponse['status'] {
+  switch (webhookStatus) {
+    case 'approved':
+      return 'completed';
+    case 'declined':
+      return 'failed';
+    case 'expired':
+      return 'expired';
+    case 'abandoned':
+      return 'abandoned';
+    case 'resubmission_requested':
+      return 'processing';
+    case 'submitted':
+      return 'processing';
+    default:
+      return 'unknown';
+  }
+}
+
 // Test endpoints (for debugging)
 router.get('/webhook/test', asyncHandler(async (req: Request, res: Response) => {
   sendSuccessResponse(res, {
@@ -157,7 +191,26 @@ router.post(
     console.log('User data:', JSON.stringify(userData, null, 2));
     console.log('VendorData will be:', userData.vendorData);
 
+    // Initialize status as pending
+    const initialStatus: VerificationStatusResponse = {
+      customerId,
+      status: 'pending',
+      lastUpdated: new Date().toISOString(),
+      canRedirect: false
+    };
+    verificationStatusStore.set(customerId, initialStatus);
+
     const session = await verificationService.createVerificationSession(userData);
+
+    // Update status to processing
+    const processingStatus: VerificationStatusResponse = {
+      customerId,
+      status: 'processing',
+      sessionId: session.id,
+      lastUpdated: new Date().toISOString(),
+      canRedirect: false
+    };
+    verificationStatusStore.set(customerId, processingStatus);
 
     sendSuccessResponse(
       res,
@@ -207,7 +260,26 @@ router.post(
     console.log('User data:', JSON.stringify(userData, null, 2));
     console.log('VendorData will be:', userData.vendorData);
 
+    // Initialize status as pending
+    const initialStatus: VerificationStatusResponse = {
+      customerId,
+      status: 'pending',
+      lastUpdated: new Date().toISOString(),
+      canRedirect: false
+    };
+    verificationStatusStore.set(customerId, initialStatus);
+
     const session = await verificationService.createVerificationSession(userData);
+
+    // Update status to processing
+    const processingStatus: VerificationStatusResponse = {
+      customerId,
+      status: 'processing',
+      sessionId: session.id,
+      lastUpdated: new Date().toISOString(),
+      canRedirect: false
+    };
+    verificationStatusStore.set(customerId, processingStatus);
 
     sendSuccessResponse(
       res,
@@ -231,7 +303,99 @@ router.post(
   })
 );
 
-// 🔐 WEBHOOK ENDPOINT WITH SIGNATURE VERIFICATION
+// 📊 POLLING ENDPOINT - Get verification status for frontend
+router.get(
+  '/status/:customerId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { customerId } = req.params;
+    
+    if (!customerId || customerId.trim().length === 0) {
+      throw createValidationError('Customer ID is required and cannot be empty');
+    }
+
+    console.log(`📊 Polling verification status for customer: ${customerId}`);
+
+    try {
+      // Check if we have a cached status from webhook
+      let statusResponse = verificationStatusStore.get(customerId);
+      
+      if (!statusResponse) {
+        // If no cached status, create a default pending status
+        statusResponse = {
+          customerId,
+          status: 'pending',
+          lastUpdated: new Date().toISOString(),
+          canRedirect: false
+        };
+        
+        console.log(`No cached status found for customer: ${customerId}, returning pending`);
+      }
+
+      // Determine if frontend can redirect based on status
+      const finalStatuses = ['completed', 'failed', 'expired', 'abandoned'];
+      statusResponse.canRedirect = finalStatuses.includes(statusResponse.status);
+      
+      // Set redirect path based on status
+      if (statusResponse.canRedirect) {
+        switch (statusResponse.status) {
+          case 'completed':
+            statusResponse.redirectTo = '/verification/success';
+            break;
+          case 'failed':
+            statusResponse.redirectTo = '/verification/failed';
+            break;
+          case 'expired':
+            statusResponse.redirectTo = '/verification/expired';
+            break;
+          case 'abandoned':
+            statusResponse.redirectTo = '/verification/abandoned';
+            break;
+        }
+      }
+
+      console.log(`📊 Returning status for customer ${customerId}:`, statusResponse);
+
+      sendSuccessResponse(res, statusResponse);
+
+    } catch (error) {
+      console.error('Error fetching verification status:', error);
+      
+      // Return a safe default response
+      const defaultResponse: VerificationStatusResponse = {
+        customerId,
+        status: 'unknown',
+        lastUpdated: new Date().toISOString(),
+        canRedirect: false
+      };
+      
+      sendSuccessResponse(res, defaultResponse);
+    }
+  })
+);
+
+// 🔄 ENDPOINT - Reset verification status (for testing/retry)
+router.delete(
+  '/status/:customerId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { customerId } = req.params;
+    
+    if (!customerId || customerId.trim().length === 0) {
+      throw createValidationError('Customer ID is required and cannot be empty');
+    }
+
+    console.log(`🔄 Resetting verification status for customer: ${customerId}`);
+    
+    // Remove from cache
+    verificationStatusStore.delete(customerId);
+    
+    sendSuccessResponse(res, {
+      message: 'Verification status reset successfully',
+      customerId
+    });
+  })
+);
+
+// 🔐 WEBHOOK ENDPOINT WITH SIGNATURE VERIFICATION (UPDATED)
 router.post(
   '/webhook',
   verifyWebhookSignature, // This middleware will handle signature verification
@@ -252,12 +416,27 @@ router.post(
         throw createValidationError(validation.error || 'Invalid verification result');
       }
 
-      // Extract customerId from vendorData
+      // Extract data from webhook
       const customerId = payload?.verification?.vendorData;
       const sessionId = payload?.verification?.id;
       const status = payload?.verification?.status;
+      const verification = payload?.verification;
 
       console.log(`Processing webhook for customer: ${customerId}, session: ${sessionId}, status: ${status}`);
+
+      // Store status for polling endpoint
+      const statusResponse: VerificationStatusResponse = {
+        customerId,
+        status: mapWebhookStatusToPollingStatus(status),
+        sessionId,
+        result: verification,
+        lastUpdated: new Date().toISOString(),
+        canRedirect: false // Will be set when polled
+      };
+
+      // Store in memory (use Redis/database in production)
+      verificationStatusStore.set(customerId, statusResponse);
+      console.log(`✅ Status stored for customer: ${customerId}, mapped status: ${statusResponse.status}`);
 
       // Handle different verification statuses
       switch (status) {
@@ -286,7 +465,8 @@ router.post(
         message: 'Webhook processed successfully',
         customerId: customerId,
         sessionId: sessionId,
-        status: status 
+        status: status,
+        mappedStatus: statusResponse.status
       });
 
     } catch (error) {
