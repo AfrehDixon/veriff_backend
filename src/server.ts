@@ -13,6 +13,10 @@ dotenv.config();
 const app = express();
 const PORT = config.PORT;
 
+
+// IMPORTANT: Handle raw body for webhook signature verification
+app.use('/api/verification/webhook', express.raw({ type: 'application/json' }));
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: {

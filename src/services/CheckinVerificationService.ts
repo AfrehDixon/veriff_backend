@@ -19,7 +19,7 @@ export class VeriffService {
     this.webhookSecret = config.VERIFF_WEBHOOK_SECRET;
     this.baseURL = config.IS_PRODUCTION 
       ? 'https://stationapi.veriff.com/v1'
-      : 'https://stationapi.veriff.com/v1'; // Veriff uses same URL for both
+      : 'https://stationapi.veriff.com/v1';
 
     if (!this.apiKey) throw new Error('VERIFF_API_KEY is required');
     if (!this.webhookSecret) throw new Error('VERIFF_WEBHOOK_SECRET is required');
@@ -30,10 +30,11 @@ export class VeriffService {
    */
   async createVerificationSession(userData: UserData): Promise<VerificationSession> {
     try {
-      // Validate required fields
       if (!userData?.firstName || !userData?.lastName) {
         throw new Error('firstName and lastName are required');
       }
+
+      const vendorData = userData.vendorData || userData.userId || `session-${Date.now()}-${Math.random().toString(36).substring(2)}`;
 
       const sessionPayload = {
         verification: {
@@ -43,13 +44,14 @@ export class VeriffService {
             lastName: userData.lastName,
             ...(userData.documentNumber && { idNumber: userData.documentNumber })
           },
-          vendorData: userData.vendorData || `session-${Date.now()}-${Math.random().toString(36).substring(2)}`,
+          vendorData: vendorData,
           lang: userData.lang || 'en',
           features: userData.features || ['selfid']
         }
       };
 
       console.log('Creating Veriff session with payload:', JSON.stringify(sessionPayload, null, 2));
+      console.log('VendorData being sent to Veriff:', vendorData);
 
       const response = await axios.post(
         `${this.baseURL}/sessions`,
@@ -143,24 +145,45 @@ export class VeriffService {
   }
 
   /**
-   * Verify Veriff webhook signature
+   * Verify Veriff webhook signature - CORRECTED VERSION
    */
-  verifyWebhookSignature(payload: string, signature: string): boolean {
+  verifyWebhookSignature(rawBody: Buffer | string, signature: string): boolean {
     try {
-      if (!payload || !signature) {
-        console.error('Missing payload or signature for webhook verification');
+      if (!rawBody || !signature) {
+        console.error('Missing rawBody or signature for webhook verification');
         return false;
       }
 
+      // Remove 'sha256=' prefix if present and clean the signature
+      const cleanSignature = signature.replace(/^sha256=/, '').trim();
+      
+      // Convert Buffer to string if needed
+      const bodyString = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : rawBody;
+      
+      console.log('=== WEBHOOK SIGNATURE VERIFICATION ===');
+      console.log('Raw body length:', bodyString.length);
+      console.log('Received signature:', cleanSignature);
+      console.log('Webhook secret exists:', !!this.webhookSecret);
+
+      // Create HMAC signature
       const expectedSignature = crypto
         .createHmac('sha256', this.webhookSecret)
-        .update(payload)
+        .update(bodyString)
         .digest('hex');
+
+      console.log('Expected signature:', expectedSignature);
       
-      return crypto.timingSafeEqual(
-        Buffer.from(signature, 'hex'),
+      // Compare signatures using constant-time comparison
+      const isValid = crypto.timingSafeEqual(
+        Buffer.from(cleanSignature, 'hex'),
         Buffer.from(expectedSignature, 'hex')
       );
+
+      console.log('Signature validation result:', isValid);
+      console.log('=====================================');
+      
+      return isValid;
+
     } catch (error) {
       console.error('Webhook signature verification error:', error);
       return false;
@@ -211,7 +234,6 @@ export class VeriffService {
     try {
       const startTime = Date.now();
       
-      // Validate configuration instead of making API call
       const configStatus = this.getConfigStatus();
       
       if (!configStatus.configured) {
@@ -221,7 +243,6 @@ export class VeriffService {
         };
       }
       
-      // Additional checks
       if (!config.JWT_SECRET) {
         return {
           healthy: false,
@@ -267,11 +288,11 @@ export class VeriffService {
       return { valid: false, error: 'Invalid payload structure' };
     }
 
-    if (!payload.id || typeof payload.id !== 'string') {
+    if (!payload.verification?.id || typeof payload.verification.id !== 'string') {
       return { valid: false, error: 'Missing or invalid session ID' };
     }
 
-    if (!payload.status) {
+    if (!payload.verification?.status) {
       return { valid: false, error: 'Missing verification status' };
     }
 
@@ -294,10 +315,9 @@ export class VeriffService {
   }
 
   private getConfidenceFromCode(code: number): number {
-    // Map Veriff codes to confidence scores
-    if (code >= 9001 && code <= 9103) return 0.95; // High confidence approvals
-    if (code >= 9200 && code <= 9299) return 0.7;  // Medium confidence
-    return 0.5; // Low confidence or declined
+    if (code >= 9001 && code <= 9103) return 0.95;
+    if (code >= 9200 && code <= 9299) return 0.7;
+    return 0.5;
   }
 }
 
