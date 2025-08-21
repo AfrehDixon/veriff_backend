@@ -94,7 +94,7 @@ export const errorHandler = (err: Error, req: Request, res: Response, next: Next
   }
 
   // Generic server error
-  res.status(500).json({ 
+  return res.status(500).json({ 
     error: 'Internal server error' 
   });
 };

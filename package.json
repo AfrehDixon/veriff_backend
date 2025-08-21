@@ -1,12 +1,10 @@
 {
   "name": "veriff",
   "version": "1.0.0",
-  "main": "dist/server.js",
-  "type": "module",
   "scripts": {
-    "start": "node dist/server.js",
+    "start": "pm2 start ecosystem.config.js --env production",
     "dev": "nodemon --exec tsx src/server.ts",
-    "build": "tsc",
+    "build": "set NODE_ENV=production && rm -rf dist/ && tsc",
     "build:watch": "tsc --watch",
     "clean": "rm -rf dist",
     "test": "jest",
