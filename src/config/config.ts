@@ -57,7 +57,7 @@ export const config: Config = {
   VERIFF_WEBHOOK_SECRET: process.env.VERIFF_WEBHOOK_SECRET || "",
   VERIFF_CALLBACK_URL:
     process.env.VERIFF_CALLBACK_URL ||
-    "https://your-domain.com/api/verification/webhook",
+    "https://veriff-frontend.vercel.app/identity-verification/verification-result",
 
   JWT_SECRET:
     process.env.JWT_SECRET ||
@@ -106,7 +106,7 @@ export const validateConfig = (): { valid: boolean; errors: string[] } => {
     if (!config[key]) errors.push(`Missing required environment variable: ${varName}`);
   }
 
-  if (config.IS_PRODUCTION && config.JWT_SECRET === 'your-super-secret-jwt-key-change-this-in-production') {
+  if (config.IS_PRODUCTION && config.JWT_SECRET === 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX3R5cGUiOiJDVVNUT01FUiIsInVzZXJJZCI6IjY3YWUxZDUyZjE3NjI4MTJiZDM2MTI3YiIsImlhdCI6MTc1NTc2OTcwNSwiZXhwIjoxNzU1NzcwNjA1fQ.0-rkiOvzrtzyJI9WGgr7LGVRqQKxZNCFiZeIJYDnJhM') {
     errors.push('JWT_SECRET must be changed in production');
   }
 
