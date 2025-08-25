@@ -9,10 +9,30 @@ import {
   JWTVerificationResult 
 } from '../types/index.js';
 
+// Add new interfaces for the customer API responses
+interface CustomerDetails {
+  _id: string;
+  name: string;
+  email: string;
+  phone: string;
+  kycStatus: string;
+  country?: string;
+}
+
+interface ExistingSession {
+  id: string;
+  status: string;
+  url: string;
+  host: string;
+  created_at: string;
+  user_data: UserData;
+}
+
 export class VeriffService {
   private apiKey: string;
   private webhookSecret: string;
   private baseURL: string;
+  private customerServiceURL: string;
 
   constructor() {
     this.apiKey = config.VERIFF_API_KEY;
@@ -20,33 +40,186 @@ export class VeriffService {
     this.baseURL = config.IS_PRODUCTION 
       ? 'https://stationapi.veriff.com/v1'
       : 'https://stationapi.veriff.com/v1';
+    this.customerServiceURL = 'https://webapi.doronpay.com';
 
     if (!this.apiKey) throw new Error('VERIFF_API_KEY is required');
     if (!this.webhookSecret) throw new Error('VERIFF_WEBHOOK_SECRET is required');
   }
 
   /**
-   * Create Veriff session according to their API docs
+   * Check if existing verification session exists for customer
    */
-  async createVerificationSession(userData: UserData): Promise<VerificationSession> {
+  private async checkExistingSession(customerId: string, token?: string): Promise<ExistingSession | null> {
     try {
-      if (!userData?.firstName || !userData?.lastName) {
-        throw new Error('firstName and lastName are required');
+      const headers: any = {};
+      if (token) headers['Authorization'] = token;
+      const response = await axios.get(
+        `${this.customerServiceURL}/customers/verification-session/${customerId}`,
+        {
+          timeout: 10000,
+          headers,
+          validateStatus: (status) => status < 500 // Don't throw on 404
+        }
+      );
+
+      if (response.status === 200 && response.data?.success && response.data?.data) {
+        console.log('Existing verification session found for customer:', customerId);
+        return response.data.data;
       }
 
-      const vendorData = userData.vendorData || userData.userId || `session-${Date.now()}-${Math.random().toString(36).substring(2)}`;
+      return null;
+    } catch (error: any) {
+      console.log('No existing session found for customer:', customerId);
+      return null;
+    }
+  }
+
+  /**
+   * Fetch customer details from customer service
+   */
+  private async fetchCustomerDetails(customerId: string, token?: string): Promise<CustomerDetails> {
+    try {
+      const headers: any = {};
+      if (token) headers['Authorization'] = token;
+      const response = await axios.get(
+        `${this.customerServiceURL}/customers/get/${customerId}`,
+        {
+          timeout: 10000,
+          headers
+        }
+      );
+
+      if (!response.data?.success || !response.data?.data) {
+        throw new Error('Invalid customer response format');
+      }
+
+      const customerData = response.data.data;
+      
+      return {
+        _id: customerData._id,
+        name: customerData.name,
+        email: customerData.email,
+        phone: customerData.phone,
+        kycStatus: customerData.kycStatus,
+        country: customerData.country
+      };
+    } catch (error: any) {
+      console.error('Failed to fetch customer details:', {
+        customerId,
+        error: error.message,
+        response: error.response?.data
+      });
+      throw new Error(`Failed to fetch customer details: ${error.response?.data?.message || error.message}`);
+    }
+  }
+
+  /**
+   * Save verification session to customer service
+   */
+  private async saveVerificationSession(customerId: string, session: VerificationSession, token?: string): Promise<void> {
+    try {
+      const payload = {
+        customerId,
+        sessionId: session.id,
+        status: session.status,
+        url: session.url,
+        host: session.host,
+        created_at: session.created_at,
+        user_data: session.user_data
+      };
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = token;
+      await axios.post(
+        `${this.customerServiceURL}/customers/verification-session`,
+        payload,
+        {
+          headers,
+          timeout: 10000
+        }
+      );
+
+      console.log('Verification session saved successfully for customer:', customerId);
+    } catch (error: any) {
+      console.error('Failed to save verification session:', {
+        customerId,
+        sessionId: session.id,
+        error: error.message,
+        response: error.response?.data
+      });
+      // Don't throw here as the session was created successfully in Veriff
+      // We just log the error for monitoring purposes
+    }
+  }
+
+  /**
+   * Parse customer name into first and last name
+   */
+  private parseCustomerName(fullName: string): { firstName: string; lastName: string } {
+    const nameParts = fullName.trim().split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+    
+    return { firstName, lastName };
+  }
+
+  /**
+   * Create Veriff session according to their API docs - UPDATED VERSION
+   */
+  async createVerificationSession(customerId: string, userData?: Partial<UserData>, token?: string): Promise<VerificationSession> {
+    try {
+      if (!customerId) {
+        throw new Error('Customer ID is required');
+      }
+
+      // Check if existing session exists
+      console.log('Checking for existing verification session for customer:', customerId);
+      const existingSession = await this.checkExistingSession(customerId, token);
+      
+      if (existingSession) {
+        console.log('Returning existing session:', existingSession.id);
+        return existingSession;
+      }
+
+      // Fetch customer details
+      console.log('Fetching customer details for:', customerId);
+      const customerDetails = await this.fetchCustomerDetails(customerId, token);
+      
+      // Parse customer name
+      const { firstName, lastName } = this.parseCustomerName(customerDetails.name);
+      
+      if (!firstName || !lastName) {
+        throw new Error(`Invalid customer name format: "${customerDetails.name}". Both firstName and lastName are required.`);
+      }
+
+      // Merge customer data with any provided userData
+      const mergedUserData: UserData = {
+        userId: customerId,
+        firstName,
+        lastName,
+        email: customerDetails.email,
+        phone: customerDetails.phone,
+        country: customerDetails.country,
+        // Override with any provided userData
+        ...userData,
+        // But always use customer details for critical fields
+        // userId: customerId,
+        // firstName,
+        // lastName
+      };
+
+      const vendorData = mergedUserData.vendorData || customerId;
 
       const sessionPayload = {
         verification: {
           callback: config.VERIFF_CALLBACK_URL,
           person: {
-            firstName: userData.firstName,
-            lastName: userData.lastName,
-            ...(userData.documentNumber && { idNumber: userData.documentNumber })
+            firstName: mergedUserData.firstName,
+            lastName: mergedUserData.lastName,
+            ...(mergedUserData.documentNumber && { idNumber: mergedUserData.documentNumber })
           },
           vendorData: vendorData,
-          lang: userData.lang || 'en',
-          features: userData.features || ['selfid']
+          lang: mergedUserData.lang || 'en',
+          features: mergedUserData.features || ['selfid']
         }
       };
 
@@ -71,16 +244,23 @@ export class VeriffService {
         throw new Error('Invalid response from Veriff API - missing verification object');
       }
 
-      return {
+      const newSession: VerificationSession = {
         id: verification.id,
         status: verification.status,
         url: verification.url,
         host: verification.host,
         created_at: new Date().toISOString(),
-        user_data: userData
+        user_data: mergedUserData
       };
+
+      // Save the session to customer service
+      console.log('Saving verification session to customer service...');
+      await this.saveVerificationSession(customerId, newSession, token);
+
+      return newSession;
     } catch (error: any) {
       console.error('Veriff session creation error:', {
+        customerId,
         message: error.message,
         response: error.response?.data,
         status: error.response?.status
@@ -92,7 +272,7 @@ export class VeriffService {
   /**
    * Get verification result from Veriff
    */
-  async getVerificationResult(sessionId: string): Promise<VerificationResult> {
+  async getVerificationResult(sessionId: string, token?: string): Promise<VerificationResult> {
     try {
       if (!sessionId) {
         throw new Error('Session ID is required');

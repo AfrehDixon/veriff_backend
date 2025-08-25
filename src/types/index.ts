@@ -33,11 +33,16 @@ export interface ImageQualityValidation {
 // User and Verification Data
 // ========================
 export interface UserData {
+  userId?: string;
   firstName?: string;
   lastName?: string;
   email?: string;
   phone?: string;
   dateOfBirth?: string;
+  documentNumber?: string;
+  country?: string;
+  lang?: string;
+  features?: string[];
   address?: {
     street?: string;
     city?: string;
@@ -45,13 +50,15 @@ export interface UserData {
     postalCode?: string;
     country?: string;
   };
-  [key: string]: any;
   vendorData?: any;
+  [key: string]: any;
 }
 
 export interface VerificationSession {
   id: string;
   status: string;
+  url?: string;
+  host?: string;
   created_at?: string;
   user_data?: UserData;
   [key: string]: any;
@@ -80,6 +87,7 @@ export interface VerificationResult {
     [key: string]: any;
   };
   extractedData?: ExtractedDocumentData;
+  vendorData?: any;
   jwtSignData?: string;
   [key: string]: any;
 }

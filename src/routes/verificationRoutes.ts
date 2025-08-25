@@ -11,7 +11,6 @@ import { verificationService } from '../services/CheckinVerificationService';
 
 const router = Router();
 
-// Add this interface for verification status responses
 interface VerificationStatusResponse {
   customerId: string;
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'expired' | 'abandoned' | 'unknown';
@@ -22,15 +21,15 @@ interface VerificationStatusResponse {
   redirectTo?: string;
 }
 
-// In-memory store for verification statuses (in production, use Redis or database)
 const verificationStatusStore = new Map<string, VerificationStatusResponse>();
 
-// Validation Schemas
 const userDataSchema = Joi.object({
-  firstName: Joi.string().min(1).max(100).optional().default('Test'),
-  lastName: Joi.string().min(1).max(100).optional().default('User'),
+  firstName: Joi.string().min(1).max(100).optional(),
+  lastName: Joi.string().min(1).max(100).optional(),
   email: Joi.string().email().optional(),
+  phone: Joi.string().optional(),
   documentNumber: Joi.string().optional(),
+  country: Joi.string().optional(),
   vendorData: Joi.string().optional(),
   lang: Joi.string().valid('en', 'et', 'es', 'ru', 'de', 'fr', 'lv', 'lt').default('en'),
   features: Joi.array().items(Joi.string().valid('selfid', 'smart-id-session')).default(['selfid'])
@@ -65,62 +64,41 @@ const validateBody = (schema: Joi.ObjectSchema) => {
   };
 };
 
-// CORRECTED webhook signature verification middleware
 const verifyWebhookSignature = (req: Request, res: Response, next: NextFunction) => {
   try {
-    console.log('=== WEBHOOK SIGNATURE MIDDLEWARE ===');
-    
-    // Get signature from headers (try multiple possible header names)
     const signature = (req.headers['x-veriff-signature'] || 
                      req.headers['x-signature'] || 
                      req.headers['x-webhook-signature']) as string;
     
-    console.log('All headers:', Object.keys(req.headers));
-    console.log('Signature header value:', signature);
-    
     if (!signature) {
-      console.error('❌ Missing webhook signature in headers');
       return next(createAuthError('Missing webhook signature'));
     }
 
-    // For webhook routes, req.body should be a Buffer (raw body)
     const rawBody = req.body;
-    console.log('Raw body type:', typeof rawBody);
-    console.log('Raw body is Buffer:', Buffer.isBuffer(rawBody));
     
     if (!rawBody) {
-      console.error('❌ Missing request body for signature verification');
       return next(createAuthError('Missing request body'));
     }
 
-    // Verify the signature using the raw body
     const isValid = verificationService.verifyWebhookSignature(rawBody, signature);
     
     if (!isValid) {
-      console.error('❌ Invalid webhook signature');
       return next(createAuthError('Invalid webhook signature'));
     }
     
-    console.log('✅ Webhook signature verified successfully');
-    
-    // Parse the JSON body for further processing
     try {
       const jsonBody = Buffer.isBuffer(rawBody) ? JSON.parse(rawBody.toString()) : rawBody;
       req.body = jsonBody;
-      console.log('✅ JSON body parsed successfully');
     } catch (parseError) {
-      console.error('❌ Failed to parse JSON body:', parseError);
       return next(createAuthError('Invalid JSON in request body'));
     }
     
     next();
   } catch (error) {
-    console.error('❌ Error in webhook signature verification:', error);
     return next(createAuthError('Error verifying webhook signature'));
   }
 };
 
-// Helper function to map webhook status to polling status
 function mapWebhookStatusToPollingStatus(webhookStatus: string): VerificationStatusResponse['status'] {
   switch (webhookStatus) {
     case 'approved':
@@ -140,7 +118,6 @@ function mapWebhookStatusToPollingStatus(webhookStatus: string): VerificationSta
   }
 }
 
-// Test endpoints (for debugging)
 router.get('/webhook/test', asyncHandler(async (req: Request, res: Response) => {
   sendSuccessResponse(res, {
     message: 'Webhook endpoint is reachable',
@@ -151,7 +128,6 @@ router.get('/webhook/test', asyncHandler(async (req: Request, res: Response) => 
 }));
 
 router.post('/webhook/test', asyncHandler(async (req: Request, res: Response) => {
-  console.log('Test webhook received:', req.body);
   sendSuccessResponse(res, {
     message: 'Test webhook received successfully',
     body: req.body,
@@ -159,9 +135,6 @@ router.post('/webhook/test', asyncHandler(async (req: Request, res: Response) =>
   });
 }));
 
-// Routes
-
-// 🚀 START VERIFICATION - Main endpoint to initiate verification
 router.post(
   "/sessions/:customerId/start",
   validateBody(userDataSchema),
@@ -177,21 +150,15 @@ router.post(
     }
     
     const userData = { 
-      firstName: req.body.firstName || '',
-      lastName: req.body.lastName || '',
       email: req.body.email || undefined,
+      phone: req.body.phone || undefined,
       documentNumber: req.body.documentNumber || undefined,
+      country: req.body.country || undefined,
       lang: req.body.lang || 'en',
       features: req.body.features || ['selfid'],
-      userId: customerId,
-      vendorData: req.body.vendorData || customerId // Use customerId as vendorData
+      vendorData: req.body.vendorData || customerId
     };
 
-    console.log(`🚀 Starting verification for customer: ${customerId}`);
-    console.log('User data:', JSON.stringify(userData, null, 2));
-    console.log('VendorData will be:', userData.vendorData);
-
-    // Initialize status as pending
     const initialStatus: VerificationStatusResponse = {
       customerId,
       status: 'pending',
@@ -200,9 +167,12 @@ router.post(
     };
     verificationStatusStore.set(customerId, initialStatus);
 
-    const session = await verificationService.createVerificationSession(userData);
+    // Ensure token is a string or undefined
+    const tokenHeader = req.headers['authorization'] || req.headers['Authorization'];
+    const token = Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader;
 
-    // Update status to processing
+    const session = await verificationService.createVerificationSession(customerId, userData, token);
+
     const processingStatus: VerificationStatusResponse = {
       customerId,
       status: 'processing',
@@ -234,7 +204,6 @@ router.post(
   })
 );
 
-// Alternative endpoint - Create verification session with auto-generated customer ID
 router.post(
   "/sessions/start",
   validateBody(userDataSchema),
@@ -246,21 +215,18 @@ router.post(
     const customerId = `customer-${Date.now()}-${Math.random().toString(36).substring(7)}`;
     
     const userData = { 
-      firstName: req.body.firstName || '',
-      lastName: req.body.lastName || '',
+      firstName: req.body.firstName || 'Test',
+      lastName: req.body.lastName || 'User',
       email: req.body.email || undefined,
+      phone: req.body.phone || undefined,
       documentNumber: req.body.documentNumber || undefined,
+      country: req.body.country || undefined,
       lang: req.body.lang || 'en',
       features: req.body.features || ['selfid'],
       userId: customerId,
       vendorData: req.body.vendorData || customerId
     };
 
-    console.log(`🚀 Starting verification with auto-generated ID: ${customerId}`);
-    console.log('User data:', JSON.stringify(userData, null, 2));
-    console.log('VendorData will be:', userData.vendorData);
-
-    // Initialize status as pending
     const initialStatus: VerificationStatusResponse = {
       customerId,
       status: 'pending',
@@ -269,9 +235,17 @@ router.post(
     };
     verificationStatusStore.set(customerId, initialStatus);
 
-    const session = await verificationService.createVerificationSession(userData);
+    // Ensure token is a string or undefined
+    const tokenHeader = req.headers['authorization'] || req.headers['Authorization'];
+    const token = Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader;
 
-    // Update status to processing
+    let session;
+    if (userData.firstName && userData.lastName) {
+      session = await verificationService.createVerificationSession(customerId, userData, token);
+    } else {
+      throw createValidationError('firstName and lastName are required for auto-generated customer sessions');
+    }
+
     const processingStatus: VerificationStatusResponse = {
       customerId,
       status: 'processing',
@@ -303,7 +277,6 @@ router.post(
   })
 );
 
-// 📊 POLLING ENDPOINT - Get verification status for frontend
 router.get(
   '/status/:customerId',
   asyncHandler(async (req: Request, res: Response) => {
@@ -313,29 +286,21 @@ router.get(
       throw createValidationError('Customer ID is required and cannot be empty');
     }
 
-    console.log(`📊 Polling verification status for customer: ${customerId}`);
-
     try {
-      // Check if we have a cached status from webhook
       let statusResponse = verificationStatusStore.get(customerId);
       
       if (!statusResponse) {
-        // If no cached status, create a default pending status
         statusResponse = {
           customerId,
           status: 'pending',
           lastUpdated: new Date().toISOString(),
           canRedirect: false
         };
-        
-        console.log(`No cached status found for customer: ${customerId}, returning pending`);
       }
 
-      // Determine if frontend can redirect based on status
       const finalStatuses = ['completed', 'failed', 'expired', 'abandoned'];
       statusResponse.canRedirect = finalStatuses.includes(statusResponse.status);
       
-      // Set redirect path based on status
       if (statusResponse.canRedirect) {
         switch (statusResponse.status) {
           case 'completed':
@@ -353,14 +318,8 @@ router.get(
         }
       }
 
-      console.log(`📊 Returning status for customer ${customerId}:`, statusResponse);
-
       sendSuccessResponse(res, statusResponse);
-
     } catch (error) {
-      console.error('Error fetching verification status:', error);
-      
-      // Return a safe default response
       const defaultResponse: VerificationStatusResponse = {
         customerId,
         status: 'unknown',
@@ -373,7 +332,6 @@ router.get(
   })
 );
 
-// 🔄 ENDPOINT - Reset verification status (for testing/retry)
 router.delete(
   '/status/:customerId',
   asyncHandler(async (req: Request, res: Response) => {
@@ -382,10 +340,7 @@ router.delete(
     if (!customerId || customerId.trim().length === 0) {
       throw createValidationError('Customer ID is required and cannot be empty');
     }
-
-    console.log(`🔄 Resetting verification status for customer: ${customerId}`);
     
-    // Remove from cache
     verificationStatusStore.delete(customerId);
     
     sendSuccessResponse(res, {
@@ -395,70 +350,33 @@ router.delete(
   })
 );
 
-// 🔐 WEBHOOK ENDPOINT WITH SIGNATURE VERIFICATION (UPDATED)
 router.post(
   '/webhook',
-  verifyWebhookSignature, // This middleware will handle signature verification
+  verifyWebhookSignature,
   asyncHandler(async (req: Request, res: Response) => {
     try {
-      console.log('=== VERIFIED WEBHOOK RECEIVED ===');
       const payload = req.body || {};
-
-      console.log('Webhook data:', {
-        id: payload?.verification?.id,
-        status: payload?.verification?.status,
-        code: payload?.verification?.code,
-        vendorData: payload?.verification?.vendorData,
-      });
 
       const validation = verificationService.validateVerificationResult(payload);
       if (!validation.valid) {
         throw createValidationError(validation.error || 'Invalid verification result');
       }
 
-      // Extract data from webhook
       const customerId = payload?.verification?.vendorData;
       const sessionId = payload?.verification?.id;
       const status = payload?.verification?.status;
       const verification = payload?.verification;
 
-      console.log(`Processing webhook for customer: ${customerId}, session: ${sessionId}, status: ${status}`);
-
-      // Store status for polling endpoint
       const statusResponse: VerificationStatusResponse = {
         customerId,
         status: mapWebhookStatusToPollingStatus(status),
         sessionId,
         result: verification,
         lastUpdated: new Date().toISOString(),
-        canRedirect: false // Will be set when polled
+        canRedirect: false
       };
 
-      // Store in memory (use Redis/database in production)
       verificationStatusStore.set(customerId, statusResponse);
-      console.log(`✅ Status stored for customer: ${customerId}, mapped status: ${statusResponse.status}`);
-
-      // Handle different verification statuses
-      switch (status) {
-        case 'approved':
-          console.log(`✅ Verification approved for customer: ${customerId}`);
-          // TODO: Add your database update logic here
-          break;
-        case 'declined':
-          console.log(`❌ Verification declined for customer: ${customerId}`);
-          // TODO: Add your database update logic here
-          break;
-        case 'resubmission_requested':
-          console.log(`🔄 Resubmission requested for customer: ${customerId}`);
-          // TODO: Add your database update logic here
-          break;
-        case 'expired':
-          console.log(`⏰ Session expired for customer: ${customerId}`);
-          // TODO: Add your database update logic here
-          break;
-        default:
-          console.log(`🔍 Status: ${status} for customer: ${customerId}`);
-      }
 
       sendSuccessResponse(res, { 
         success: true, 
@@ -468,15 +386,12 @@ router.post(
         status: status,
         mappedStatus: statusResponse.status
       });
-
     } catch (error) {
-      console.error('Webhook processing error:', error);
-      throw error; // Re-throw to be handled by error middleware
+      throw error;
     }
   })
 );
 
-// Get verification status/result
 router.get(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {
@@ -490,9 +405,11 @@ router.get(
       throw createValidationError('Valid session ID is required (minimum 10 characters)');
     }
 
-    console.log(`📋 Fetching verification result for session: ${sessionId}`);
+    // Ensure token is a string or undefined
+    const tokenHeader = req.headers['authorization'] || req.headers['Authorization'];
+    const token = Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader;
 
-    const result = await verificationService.getVerificationResult(sessionId);
+    const result = await verificationService.getVerificationResult(sessionId, token);
     
     sendSuccessResponse(res, {
       success: true,
@@ -501,7 +418,6 @@ router.get(
   })
 );
 
-// Generate session token for frontend
 router.post(
   '/token',
   validateBody(userDataSchema),
@@ -517,8 +433,6 @@ router.post(
       userId: req.body.userId || `user-${Date.now()}`
     };
     
-    console.log('🎫 Generating session token for user:', userData.firstName, userData.lastName);
-    
     const token = verificationService.generateSessionToken(userData);
 
     sendSuccessResponse(res, { 
@@ -528,7 +442,6 @@ router.post(
   })
 );
 
-// Verify token
 router.post(
   '/verify-token',
   validateBody(tokenSchema),
@@ -543,8 +456,6 @@ router.post(
       throw createValidationError('Valid token is required');
     }
     
-    console.log('🔐 Verifying session token');
-    
     const verification = verificationService.verifySessionToken(token);
     if (!verification.valid) {
       throw createAuthError(`Invalid or expired token: ${verification.error || 'Unknown error'}`);
@@ -557,7 +468,6 @@ router.post(
   })
 );
 
-// Health check
 router.get('/health', asyncHandler(async (req: Request, res: Response) => {
   const healthStatus = await verificationService.healthCheck();
   
@@ -572,7 +482,6 @@ router.get('/health', asyncHandler(async (req: Request, res: Response) => {
   });
 }));
 
-// Configuration status
 router.get('/config', asyncHandler(async (req: Request, res: Response) => {
   const configStatus = verificationService.getConfigStatus();
   
@@ -583,7 +492,6 @@ router.get('/config', asyncHandler(async (req: Request, res: Response) => {
   });
 }));
 
-// Test endpoint - for debugging purposes
 router.get('/test', asyncHandler(async (req: Request, res: Response) => {
   sendSuccessResponse(res, {
     message: 'Veriff routes are working',
