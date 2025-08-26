@@ -49,12 +49,13 @@ export class VeriffService {
   /**
    * Check if existing verification session exists for customer
    */
-  private async checkExistingSession(customerId: string, token?: string): Promise<ExistingSession | null> {
+  private async checkExistingSession(customerId: string, token?: string): Promise<VerificationSession | null> {
     try {
       const headers: any = {};
       if (token) headers['Authorization'] = token;
+      
       const response = await axios.get(
-        `${this.customerServiceURL}/customers/verification-session/${customerId}`,
+        `${this.customerServiceURL}/customers/${customerId}/verification/sessionId`,
         {
           timeout: 10000,
           headers,
@@ -64,12 +65,22 @@ export class VeriffService {
 
       if (response.status === 200 && response.data?.success && response.data?.data) {
         console.log('Existing verification session found for customer:', customerId);
-        return response.data.data;
+        const sessionData = response.data.data;
+        
+        // Ensure we have all required fields for VerificationSession
+        return {
+          id: sessionData.sessionId || sessionData.id,
+          status: sessionData.status,
+          url: sessionData.url,
+          host: sessionData.host,
+          created_at: sessionData.created_at || new Date().toISOString(),
+          user_data: sessionData.user_data || {}
+        } as VerificationSession;
       }
 
       return null;
     } catch (error: any) {
-      console.log('No existing session found for customer:', customerId);
+      console.log('No existing session found for customer:', customerId, error.message);
       return null;
     }
   }
@@ -118,19 +129,31 @@ export class VeriffService {
    */
   private async saveVerificationSession(customerId: string, session: VerificationSession, token?: string): Promise<void> {
     try {
-      const payload = {
-        customerId,
+      // Create the complete session data structure
+      const sessionData = {
         sessionId: session.id,
         status: session.status,
         url: session.url,
         host: session.host,
         created_at: session.created_at,
-        user_data: session.user_data
+        user_data: session.user_data,
+        // Add additional fields that might be needed
+        instructions: {
+          message: "Redirect user to the provided URL to complete verification",
+          url: session.url
+        }
       };
+
+      const payload = {
+        customerId,
+        sessionData
+      };
+
       const headers: any = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = token;
-      await axios.post(
-        `${this.customerServiceURL}/customers/verification-session`,
+      
+      const response = await axios.post(
+        `${this.customerServiceURL}/customers/verification/sessionId`,
         payload,
         {
           headers,
@@ -139,6 +162,7 @@ export class VeriffService {
       );
 
       console.log('Verification session saved successfully for customer:', customerId);
+      console.log('Save response:', response.data);
     } catch (error: any) {
       console.error('Failed to save verification session:', {
         customerId,
@@ -163,7 +187,7 @@ export class VeriffService {
   }
 
   /**
-   * Create Veriff session according to their API docs - UPDATED VERSION
+   * Create Veriff session - Returns existing session if found, creates new only if none exists
    */
   async createVerificationSession(customerId: string, userData?: Partial<UserData>, token?: string): Promise<VerificationSession> {
     try {
@@ -171,14 +195,17 @@ export class VeriffService {
         throw new Error('Customer ID is required');
       }
 
-      // Check if existing session exists
+      // Check if existing session exists FIRST
       console.log('Checking for existing verification session for customer:', customerId);
       const existingSession = await this.checkExistingSession(customerId, token);
       
-      if (existingSession) {
-        console.log('Returning existing session:', existingSession.id);
+      if (existingSession && existingSession.id) {
+        console.log('Found existing session with ID:', existingSession.id);
+        console.log('Returning existing session - NOT creating new one');
         return existingSession;
       }
+
+      console.log('No existing session found. Proceeding to create new verification session...');
 
       // Fetch customer details
       console.log('Fetching customer details for:', customerId);
@@ -202,9 +229,6 @@ export class VeriffService {
         // Override with any provided userData
         ...userData,
         // But always use customer details for critical fields
-        // userId: customerId,
-        // firstName,
-        // lastName
       };
 
       const vendorData = mergedUserData.vendorData || customerId;
@@ -223,7 +247,7 @@ export class VeriffService {
         }
       };
 
-      console.log('Creating Veriff session with payload:', JSON.stringify(sessionPayload, null, 2));
+      console.log('Creating NEW Veriff session with payload:', JSON.stringify(sessionPayload, null, 2));
       console.log('VendorData being sent to Veriff:', vendorData);
 
       const response = await axios.post(
@@ -253,11 +277,13 @@ export class VeriffService {
         user_data: mergedUserData
       };
 
-      // Save the session to customer service
-      console.log('Saving verification session to customer service...');
+      // Save the NEW session to customer service
+      console.log('Saving NEW verification session to customer service...');
       await this.saveVerificationSession(customerId, newSession, token);
 
+      console.log('NEW session created successfully with ID:', newSession.id);
       return newSession;
+
     } catch (error: any) {
       console.error('Veriff session creation error:', {
         customerId,
