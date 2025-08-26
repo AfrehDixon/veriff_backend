@@ -19,14 +19,7 @@ interface CustomerDetails {
   country?: string;
 }
 
-interface ExistingSession {
-  id: string;
-  status: string;
-  url: string;
-  host: string;
-  created_at: string;
-  user_data: UserData;
-}
+
 
 export class VeriffService {
   private apiKey: string;
