@@ -135,6 +135,8 @@ router.post('/webhook/test', asyncHandler(async (req: Request, res: Response) =>
   });
 }));
 
+
+
 router.post(
   "/sessions/:customerId/start",
   validateBody(userDataSchema),
@@ -204,78 +206,7 @@ router.post(
   })
 );
 
-router.post(
-  "/sessions/start",
-  validateBody(userDataSchema),
-  asyncHandler(async (req: Request, res: Response) => {
-    if (!req.body) {
-      req.body = {};
-    }
 
-    const customerId = `customer-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-    
-    const userData = { 
-      firstName: req.body.firstName || 'Test',
-      lastName: req.body.lastName || 'User',
-      email: req.body.email || undefined,
-      phone: req.body.phone || undefined,
-      documentNumber: req.body.documentNumber || undefined,
-      country: req.body.country || undefined,
-      lang: req.body.lang || 'en',
-      features: req.body.features || ['selfid'],
-      userId: customerId,
-      vendorData: req.body.vendorData || customerId
-    };
-
-    const initialStatus: VerificationStatusResponse = {
-      customerId,
-      status: 'pending',
-      lastUpdated: new Date().toISOString(),
-      canRedirect: false
-    };
-    verificationStatusStore.set(customerId, initialStatus);
-
-    // Ensure token is a string or undefined
-    const tokenHeader = req.headers['authorization'] || req.headers['Authorization'];
-    const token = Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader;
-
-    let session;
-    if (userData.firstName && userData.lastName) {
-      session = await verificationService.createVerificationSession(customerId, userData, token);
-    } else {
-      throw createValidationError('firstName and lastName are required for auto-generated customer sessions');
-    }
-
-    const processingStatus: VerificationStatusResponse = {
-      customerId,
-      status: 'processing',
-      sessionId: session.id,
-      lastUpdated: new Date().toISOString(),
-      canRedirect: false
-    };
-    verificationStatusStore.set(customerId, processingStatus);
-
-    sendSuccessResponse(
-      res,
-      {
-        success: true,
-        customerId,
-        session: {
-          id: session.id,
-          url: session.url,
-          host: session.host,
-          status: session.status
-        },
-        instructions: {
-          message: "Redirect user to the provided URL to complete verification",
-          url: session.url
-        }
-      },
-      "Verification session created successfully",
-      201
-    );
-  })
-);
 
 router.get(
   '/status/:customerId',
@@ -427,8 +358,8 @@ router.post(
     }
 
     const userData = {
-      firstName: req.body.firstName || 'Test',
-      lastName: req.body.lastName || 'User',
+      firstName: req.body.firstName || '',
+      lastName: req.body.lastName || '',
       email: req.body.email || undefined,
       userId: req.body.userId || `user-${Date.now()}`
     };

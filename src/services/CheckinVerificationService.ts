@@ -207,9 +207,9 @@ export class VeriffService {
       // Parse customer name
       const { firstName, lastName } = this.parseCustomerName(customerDetails.name);
       
-      if (!firstName || !lastName) {
-        throw new Error(`Invalid customer name format: "${customerDetails.name}". Both firstName and lastName are required.`);
-      }
+      // if (!firstName || !lastName) {
+      //   throw new Error(`Invalid customer name format: "${customerDetails.name}". Both firstName and lastName are required.`);
+      // }
 
       // Merge customer data with any provided userData
       const mergedUserData: UserData = {
