@@ -81,7 +81,7 @@ export class VeriffService {
   /**
    * Fetch customer details from customer service
    */
-  private async fetchCustomerDetails(customerId: string, token?: string): Promise<CustomerDetails> {
+  private async  fetchCustomerDetails(customerId: string, token?: string): Promise<CustomerDetails> {
     try {
       const headers: any = {};
       if (token) headers['Authorization'] = token;
